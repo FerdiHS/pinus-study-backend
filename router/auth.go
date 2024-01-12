@@ -12,7 +12,6 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 )
 
 func isEmailValid(e string) bool {
@@ -143,12 +142,6 @@ func LogIn(db *sql.DB) func(c *gin.Context) {
 
 // Sends the email verification link to the user's email
 func sendVerification(userid int, emailid int, email string, username string, secretCode string) error {
-	err := godotenv.Load(".env")
-
-	if err != nil {
-		panic(err)
-	}
-
 	frontendUrl := os.Getenv("FRONTEND_URL")
 	emailSenderName := os.Getenv("EMAIL_SENDER_NAME")
 	emailSenderAddress := os.Getenv("EMAIL_SENDER_ADDRESS")
