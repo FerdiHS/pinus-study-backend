@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -16,6 +15,7 @@ type Module struct {
 	Desc            string
 	SubscriberCount int
 	Threads         []Thread
+	ReviewCount     int
 }
 
 func GetModules(db *sql.DB, keyword string, page int) []Module {
@@ -83,6 +83,29 @@ func getSubscriberCount(db *sql.DB, moduleid string) int {
 	return count
 }
 
+func getReviewCount(db *sql.DB, moduleid string) int {
+	rows, err := db.Query(`SELECT COUNT(*)
+		FROM Reviews AS R
+		WHERE R.moduleId = $1 AND R.is_deleted = false`,
+		moduleid)
+
+	if err != nil {
+		fmt.Println(err.Error())
+		panic(err)
+	}
+	defer rows.Close()
+
+	var count int
+	for rows.Next() {
+		err = rows.Scan(&count)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	return count
+}
+
 func GetModuleByModuleId(db *sql.DB, moduleid string) Module {
 	query := fmt.Sprintf(`
 	SELECT M.id, M.name, M.description, COUNT(S.moduleid)
@@ -109,12 +132,12 @@ func GetModuleByModuleId(db *sql.DB, moduleid string) Module {
 	}
 
 	query = fmt.Sprintf(`
-	SELECT T.id, T.title, T.content, T.moduleid, T.authorid, T.timestamp, T.is_deleted
+	SELECT T.id, T.title, T.content, T.moduleid, T.authorid, U.username, T.timestamp, T.is_deleted, T.likes_count, T.dislikes_count, T.comments_count
 	FROM Modules AS M 
 	LEFT JOIN Threads AS T ON M.id = T.moduleid 
 	LEFT JOIN Subscribes AS S ON S.moduleid = M.id 
-	WHERE M.id = '%s' 
-	GROUP BY M.id, M.name, M.description, T.id, T.title, T.content, T.moduleid, T.authorid, T.timestamp, T.is_deleted;
+	LEFT JOIN Users AS U ON U.id = T.authorid
+	WHERE M.id = '%s';
 	`, moduleid)
 
 	rows, err = db.Query(query)
@@ -126,12 +149,15 @@ func GetModuleByModuleId(db *sql.DB, moduleid string) Module {
 
 	for rows.Next() {
 		var thread Thread
-		err := rows.Scan(&thread.Id, &thread.Title, &thread.Content, &thread.ModuleId, &thread.AuthorId, &thread.Timestamp, &thread.IsDeleted)
+		err := rows.Scan(&thread.Id, &thread.Title, &thread.Content, &thread.ModuleId, &thread.AuthorId, &thread.Username,
+			&thread.Timestamp, &thread.IsDeleted, &thread.LikesCount, &thread.DislikesCount, &thread.CommentsCount)
 		if err != nil {
 			break
 		}
 		mod.Threads = append(mod.Threads, thread)
 	}
+
+	mod.ReviewCount = getReviewCount(db, moduleid)
 
 	fmt.Println(mod)
 	return mod
@@ -149,7 +175,7 @@ func PostThread(db *sql.DB, authorid int, content string, title string, tags []i
 
 	newThreadID := getThreadId(tx)
 
-	_, err = tx.Exec("INSERT INTO Threads (authorid, content, id, moduleid, timestamp, title) VALUES ($1, $2, $3, $4, $5, $6)", authorid, content, newThreadID, strings.ToUpper(moduleid), time.Now().Format("2006-01-02 15:04:05"), title)
+	_, err = tx.Exec("INSERT INTO Threads (authorid, content, id, moduleid, title) VALUES ($1, $2, $3, $4, $5)", authorid, content, newThreadID, strings.ToUpper(moduleid), title)
 	if err != nil {
 		fmt.Println("Error in inserting thread into db: ", err.Error())
 		return -1, errors.New("Thread data is malformed.")
