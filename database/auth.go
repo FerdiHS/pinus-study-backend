@@ -60,7 +60,7 @@ func doPasswordsMatch(hashedPassword, currPassword string, salt []byte) bool {
 	return hashedPassword == currPasswordHash
 }
 
-func SignUp(db *sql.DB, email string, username string, password string, secretCode string) (int, int, bool, bool, error) {
+func SignUp(db *sql.DB, email string, username string, password string, secretCode string) (int, int, bool, bool, bool, error) {
 	salt := generateRandomSalt()
 	saltString := hex.EncodeToString(salt)
 	encryptedPassword := hashPassword(password, salt)
@@ -74,20 +74,20 @@ func SignUp(db *sql.DB, email string, username string, password string, secretCo
 	// return nexId, nil
 
 	var userId, emailId int
-	var isEmailExist, isUsernameExist bool
+	var isEmailExist, isUsernameExist, isVerified bool
 
 	sql_statement := `
 	CALL signup($1, $2, $3, $4, $5,
-	$6, $7, $8, $9);
+	$6, $7, $8, $9, $10);
 	`
 
-	err := db.QueryRow(sql_statement, username, email, encryptedPassword, saltString, secretCode, &userId, &emailId, &isEmailExist, &isUsernameExist).
-		Scan(&userId, &emailId, &isEmailExist, &isUsernameExist)
+	err := db.QueryRow(sql_statement, username, email, encryptedPassword, saltString, secretCode, &userId, &emailId, &isEmailExist, &isUsernameExist, &isVerified).
+		Scan(&userId, &emailId, &isEmailExist, &isUsernameExist, &isVerified)
 	if err != nil {
 		panic(err)
 	}
 
-	return userId, emailId, isEmailExist, isUsernameExist, nil
+	return userId, emailId, isEmailExist, isUsernameExist, isVerified, nil
 }
 
 func LogIn(db *sql.DB, nameOrEmail string, password string) (bool, bool, bool, int, string, error) {
@@ -242,4 +242,94 @@ func VerifyEmail(db *sql.DB, emailid int, secretCode string) (bool, bool, bool, 
 	}
 
 	return isVerified, isExpired, isMatch, nil
+}
+
+// Change password returning whether the user exist, whether the account has been verified, and whether the old password match
+func ChangePassword(db *sql.DB, userid int, oldPassword string, newPassword string) (bool, bool, bool, error) {
+	sql_statement := `
+	SELECT password, salt, is_verified FROM users WHERE id = $1;
+	`
+
+	var encryptedPassword, saltString string
+	var isVerified bool
+	rows, err := db.Query(sql_statement, userid)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer rows.Close()
+
+	if !rows.Next() {
+		return false, false, false, nil
+	}
+
+	rows.Scan(&encryptedPassword, &saltString, &isVerified)
+
+	if !isVerified {
+		return true, false, false, nil
+	}
+
+	salt, err1 := hex.DecodeString(saltString)
+	if err1 != nil {
+		panic(err1)
+	}
+
+	if !doPasswordsMatch(encryptedPassword, oldPassword, []byte(salt)) {
+		return true, true, false, nil
+	}
+
+	UpdatePassword(db, userid, newPassword)
+
+	return true, true, true, nil
+}
+
+func UpdatePassword(db *sql.DB, userid int, newPassword string) (bool, error) {
+	sql_statement := `
+	UPDATE users
+	SET password = $1, salt = $2
+	WHERE id = $3;
+	`
+	newSalt := generateRandomSalt()
+	newSaltString := hex.EncodeToString(newSalt)
+	newEncryptedPassword := hashPassword(newPassword, []byte(newSalt))
+
+	_, err := db.Exec(sql_statement, newEncryptedPassword, newSaltString, userid)
+	if err != nil {
+		panic(err)
+	}
+	return true, nil
+}
+
+// Make password recovery returning whether the user exist, has been verified, the recovery id, and the user's email
+func MakePasswordRecovery(db *sql.DB, userid int, secretCode string) (bool, bool, int, string, error) {
+	sql_statement := `
+	CALL make_password_recovery($1, $2, $3, $4, $5, $6);
+	`
+
+	var isExist, isVerified bool
+	var recoveryId int
+	var email string
+	err := db.QueryRow(sql_statement, userid, secretCode, &isExist, &isVerified, &recoveryId, &email).Scan(&isExist, &isVerified, &recoveryId, &email)
+	if err != nil {
+		panic(err)
+	}
+	return isExist, isVerified, recoveryId, email, nil
+}
+
+// Get whether the recoveryId and secretCode match, expired, and used
+func GetRecoverPassword(db *sql.DB, recoveryId int, secretCode string) (bool, bool, bool, error) {
+	sql_statement := `
+	SELECT secret_code = $1 AS is_match, expired_at :: time < CURRENT_TIME AS is_expired, is_used
+	FROM password_recoveries
+	WHERE id = $2;
+	`
+
+	var isMatch, isExpired, isUsed bool
+	err := db.QueryRow(sql_statement, secretCode, recoveryId).Scan(&isMatch, &isExpired, &isUsed)
+	if err != nil {
+		panic(err)
+	}
+
+	return isMatch, isExpired, isUsed, nil
 }
